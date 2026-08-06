@@ -164,6 +164,23 @@ const SECRET_KEYS = new Set<string>([
 
 const REDACTED = "[REDACTED]";
 
+// The request headers the high-trust scrubber removes. `cookie` and
+// `authorization` carry the session and the credential. The rest carry the
+// caller IP address. The plan warns not to trust the SDK to gate these, so the
+// scrubber removes them itself, so the high-trust level honors
+// `sendDefaultPii: false` for the cookies, the credential, and the caller IP
+// address regardless of the SDK default integrations.
+const REMOVED_HIGH_TRUST_HEADERS = new Set<string>([
+  "cookie",
+  "authorization",
+  "x-forwarded-for",
+  "x-real-ip",
+  "forwarded",
+  "true-client-ip",
+  "x-client-ip",
+  "cf-connecting-ip",
+]);
+
 // A guard against a hostile or accidental cycle. The event tree is shallow, so a
 // cap of twenty keeps the high-trust debug data (breadcrumbs, contexts, and
 // stack-frame local variables) while it stops runaway recursion.
@@ -292,9 +309,8 @@ function scrubHighTrust(event: Record<string, unknown>): Record<string, unknown>
     if (headers) {
       const nextHeaders: Record<string, unknown> = {};
       for (const [name, headerValue] of Object.entries(headers)) {
-        const lower = name.toLowerCase();
-        // Remove the cookie and authorization header entries.
-        if (lower === "cookie" || lower === "authorization") continue;
+        // Remove the cookie, authorization, and caller-IP header entries.
+        if (REMOVED_HIGH_TRUST_HEADERS.has(name.toLowerCase())) continue;
         nextHeaders[name] = headerValue;
       }
       nextRequest.headers = nextHeaders;

@@ -316,6 +316,7 @@ function buildRichEvent(): Record<string, unknown> {
       headers: {
         authorization: BEARER,
         cookie: COOKIE_VALUE,
+        "x-forwarded-for": CALLER_IP,
         "user-agent": "curl/8",
       },
       cookies: { session: "topsecretcookievalue" },
@@ -454,6 +455,12 @@ describe("scrubber — high-trust strategy", () => {
     expect(request.env).toBeUndefined();
     const headers = request.headers as Record<string, unknown>;
     expect(headers.cookie).toBeUndefined();
+    expect(headers.authorization).toBeUndefined();
+    // The IP-bearing header is stripped, so the caller IP never reaches Sentry
+    // through the request headers.
+    expect(headers["x-forwarded-for"]).toBeUndefined();
+    // A non-sensitive header survives, so the scrubber did not blank the set.
+    expect(headers["user-agent"]).toBe("curl/8");
     // The caller IP address, the user identity, and the cookie value never reach
     // the envelope.
     const serialized = JSON.stringify(out);
