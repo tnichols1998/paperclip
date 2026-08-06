@@ -539,3 +539,35 @@ describe("scrubber — fail-closed in both levels", () => {
     expect(out).toBeNull();
   });
 });
+
+describe("high-trust warning helper", () => {
+  it("returns the warning text with the exposed categories when SENTRY_TRUST_LEVEL=high", async () => {
+    process.env[DSN_ENV] = TEST_DSN;
+    process.env[TRUST_ENV] = "high";
+    const sentry = await importFreshSentry();
+
+    const warning = sentry.highTrustWarning();
+    expect(warning).toBeDefined();
+    const text = String(warning);
+    // The warning names the data categories that now cross the boundary.
+    expect(text).toContain("local variables");
+    expect(text).toContain("breadcrumbs");
+    expect(text).toContain("context");
+    expect(text).toContain("request metadata");
+    // The warning states that the identity data stays off.
+    expect(text).toContain("cookies");
+    expect(text).toContain("IP address");
+    expect(text).toContain("user identity");
+    // The warning never prints the DSN value.
+    expect(text).not.toContain(TEST_DSN);
+    expect(text).not.toContain("examplePublicKey");
+  });
+
+  it("returns nothing in the low-trust level", async () => {
+    process.env[DSN_ENV] = TEST_DSN;
+    delete process.env[TRUST_ENV];
+    const sentry = await importFreshSentry();
+
+    expect(sentry.highTrustWarning()).toBeUndefined();
+  });
+});

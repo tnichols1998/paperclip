@@ -401,6 +401,24 @@ export function isHighTrust(): boolean {
 }
 
 /**
+ * The startup warning for the high-trust level. It returns the warning text when
+ * the high-trust level is on, and `undefined` in the low-trust level. The text
+ * names the data categories that now cross the boundary and states that the
+ * cookies, the caller IP address, and the user identity stay off. It never
+ * prints the DSN value. The bootstrap logs it once at start.
+ */
+export function highTrustWarning(): string | undefined {
+  if (trustLevel !== "high") return undefined;
+  return (
+    "[paperclip] SENTRY_TRUST_LEVEL=high. When SENTRY_DSN is set, Sentry receives " +
+    "richer debug data: the stack-frame local variables, the breadcrumbs, the error " +
+    "context, and the request metadata. sendDefaultPii is false, so the cookies, the " +
+    "caller IP address, and the user identity stay off. Set SENTRY_TRUST_LEVEL=low or " +
+    "unset it to return to the minimal level."
+  );
+}
+
+/**
  * Capture an error to Sentry with a narrow, typed context. It never throws. It
  * returns the event id, or `undefined` when Sentry is off. The `beforeSend`
  * scrubber (Phase 2) is the egress contract that redacts the event.
