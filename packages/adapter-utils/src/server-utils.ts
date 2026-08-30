@@ -3492,6 +3492,16 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
     executionCwd: shapedWorkspaceEnv.workspaceCwd,
     executionTargetIsRemote: input.executionTargetIsRemote,
   });
+  // Snapshot platform-owned PAPERCLIP_* run identity before the adapterConfig
+  // env merge below. The platform sets these at spawn (task/wake identity,
+  // workspace, API base) and they are the trust basis for run identity; user
+  // overrides must never clobber them.
+  const platformRunEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input.env)) {
+    if (key.startsWith("PAPERCLIP_") && typeof value === "string") {
+      platformRunEnv[key] = value;
+    }
+  }
   for (const [key, value] of Object.entries(shapedEnvConfig)) {
     // Adapter/user-configured env must never override a Paperclip-managed
     // runtime variable. Non-PAPERCLIP_* keys (plain values and resolved
@@ -3503,6 +3513,11 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
     // config binding sets.
     if (isForbiddenConfigEnvKey(key)) continue;
     if (isPaperclipRuntimeEnvKey(key) && key in input.env) continue;
+    input.env[key] = value;
+  }
+  // Re-pin platform-owned run identity after the user env merge (defense in
+  // depth, mirroring OPENCODE_DISABLE_PROJECT_CONFIG in the adapter).
+  for (const [key, value] of Object.entries(platformRunEnv)) {
     input.env[key] = value;
   }
 

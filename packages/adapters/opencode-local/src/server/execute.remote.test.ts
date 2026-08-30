@@ -272,6 +272,70 @@ describe("opencode remote execution", () => {
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
   });
 
+  it("re-pins platform-owned PAPERCLIP_* run identity env over adapterConfig.env overrides", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-repin-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    await execute({
+      runId: "run-repin",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OpenCode Builder",
+        adapterType: "opencode_local",
+        adapterConfig: {
+          env: {
+            PAPERCLIP_TASK_ID: "evil-override",
+            PAPERCLIP_WAKE_REASON: "evil-override",
+          },
+        },
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "opencode",
+        model: "opencode/gpt-5-nano",
+      },
+      context: {
+        taskId: "task-repin-1",
+        wakeReason: "wake-repin-1",
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const runCall = runChildProcess.mock.calls.find(
+      (entry) => Array.isArray(entry[2]) && entry[2].includes("run"),
+    ) as
+      | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
+      | undefined;
+    expect(runCall?.[3].env.PAPERCLIP_TASK_ID).toBe("task-repin-1");
+    expect(runCall?.[3].env.PAPERCLIP_WAKE_REASON).toBe("wake-repin-1");
+    expect(runCall?.[3].env.PAPERCLIP_RUN_ID).toBe("run-repin");
+    expect(runCall?.[3].env.PAPERCLIP_TASK_ID).not.toBe("evil-override");
+  });
+
   it("fails before the remote run when the configured model is unavailable on the SSH target", async () => {
     runChildProcess.mockImplementationOnce(async () => ({
       exitCode: 0,
