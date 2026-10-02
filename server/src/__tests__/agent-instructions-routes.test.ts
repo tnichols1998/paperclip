@@ -141,7 +141,7 @@ async function createApp(actor: Record<string, unknown> = boardActor(), db: Reco
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = actor;
+    (req as any).actor = actor ?? boardActor();
     next();
   });
   app.use("/api", agentRoutes(db as any));
@@ -836,5 +836,52 @@ describe("agent instructions bundle routes", () => {
     expect(res.body.adapterConfig.instructionsRootPath).toBeUndefined();
     expect(res.body.adapterConfig.instructionsEntryFile).toBeUndefined();
     expect(res.body.adapterConfig.instructionsFilePath).toBeUndefined();
+  });
+
+  it("rejects agent self-PATCH of platform-owned PAPERCLIP_* env", async () => {
+    mockAgentService.getById.mockResolvedValue(makeAgent());
+
+    const res = await requestApp(await createApp({
+      type: "agent",
+      agentId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      source: "agent_api_key",
+    }), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        adapterConfig: {
+          env: { PAPERCLIP_TASK_ID: "forged" },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(JSON.stringify(res.body)).toContain("run identity env");
+  });
+
+  it("allows agent to set non-platform env and board to set PAPERCLIP_* env", async () => {
+    mockAgentService.getById.mockResolvedValue(makeAgent());
+
+    const agentRes = await requestApp(await createApp({
+      type: "agent",
+      agentId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      source: "agent_api_key",
+    }), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        adapterConfig: {
+          env: { MY_CUSTOM_VAR: "ok" },
+        },
+      }));
+    expect(agentRes.status, JSON.stringify(agentRes.body)).toBe(200);
+
+    const boardRes = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        adapterConfig: {
+          env: { PAPERCLIP_TASK_ID: "board-set" },
+        },
+      }));
+    expect(boardRes.status, JSON.stringify(boardRes.body)).toBe(200);
   });
 });

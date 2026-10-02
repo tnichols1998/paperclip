@@ -2900,6 +2900,30 @@ export function agentRoutes(
     return KNOWN_INSTRUCTIONS_BUNDLE_KEYS.some((key) => adapterConfig[key] !== undefined);
   }
 
+  // Platform-owned run-identity env namespace. The platform re-pins these at
+  // adapter spawn (PAPERCLIP_TASK_ID, PAPERCLIP_WAKE_REASON, ...). Allowing an
+  // agent to mutate them for its own future runs would let it spoof run
+  // identity and clobber control variables, so agent-authenticated callers may
+  // never set them.
+  const PLATFORM_OWNED_ENV_PREFIX = "PAPERCLIP_";
+
+  function assertNoAgentEnvMutation(
+    req: Request,
+    adapterConfig: Record<string, unknown> | null | undefined,
+    path = "adapterConfig",
+  ) {
+    if (req.actor.type !== "agent" || !adapterConfig) return;
+    const env = asRecord(adapterConfig.env);
+    if (!env) return;
+    const changedSensitiveKeys = Object.keys(env)
+      .filter((key) => key.startsWith(PLATFORM_OWNED_ENV_PREFIX))
+      .map((key) => `${path}.env.${key}`);
+    if (changedSensitiveKeys.length === 0) return;
+    throw forbidden(
+      `Agent-authenticated callers cannot modify platform-owned run identity env (${changedSensitiveKeys.join(", ")})`,
+    );
+  }
+
   function assertNoAgentAdapterConfigMutation(
     req: Request,
     adapterConfig: Record<string, unknown>,
@@ -2910,6 +2934,7 @@ export function agentRoutes(
       req,
       collectAgentAdapterWorkspaceCommandPaths(adapterConfig, path),
     );
+    assertNoAgentEnvMutation(req, adapterConfig, path);
   }
 
   function summarizeAgentUpdateDetails(patch: Record<string, unknown>) {
