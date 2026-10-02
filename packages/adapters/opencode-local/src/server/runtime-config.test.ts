@@ -27,12 +27,25 @@ async function makeConfigHome(initialConfig?: Record<string, unknown>) {
       "utf8",
     );
   }
-  return root;
+  return { root, configDir };
+}
+
+async function makePluginFile(configDir: string, segments: string[] = ["plugin", "guard", "plugin.js"]) {
+  const filepath = path.join(configDir, ...segments);
+  await fs.mkdir(path.dirname(filepath), { recursive: true });
+  await fs.writeFile(filepath, "export default {};\n", "utf8");
+  return filepath;
+}
+
+async function readRuntimeConfig(configHome: string): Promise<Record<string, unknown>> {
+  return JSON.parse(
+    await fs.readFile(path.join(configHome, "opencode", "opencode.json"), "utf8"),
+  ) as Record<string, unknown>;
 }
 
 describe("prepareOpenCodeRuntimeConfig", () => {
   it("allows all tools and connected tools by default", async () => {
-    const configHome = await makeConfigHome({
+    const { root: configHome } = await makeConfigHome({
       permission: {
         read: "allow",
         bash: "ask",
@@ -65,7 +78,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
   });
 
   it("merges custom providers from PAPERCLIP_OPENCODE_PROVIDERS into the config", async () => {
-    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const { root: configHome } = await makeConfigHome({ permission: { read: "allow" } });
     const providers = {
       bifrost: {
         npm: "@ai-sdk/openai-compatible",
@@ -99,7 +112,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
   });
 
   it("reads PAPERCLIP_OPENCODE_PROVIDERS from process.env when absent from the run env", async () => {
-    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const { root: configHome } = await makeConfigHome({ permission: { read: "allow" } });
     const providers = { bifrost: { npm: "@ai-sdk/openai-compatible", models: { "example/model-a": {} } } };
     process.env.PAPERCLIP_OPENCODE_PROVIDERS = JSON.stringify(providers);
     try {
@@ -119,7 +132,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
   });
 
   it("expands {env:VAR} placeholders in custom providers using the run/process env (bakes the literal vk)", async () => {
-    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const { root: configHome } = await makeConfigHome({ permission: { read: "allow" } });
     const providers = {
       bifrost: {
         npm: "@ai-sdk/openai-compatible",
@@ -142,7 +155,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
   });
 
   it("leaves an unresolvable {env:VAR} placeholder intact", async () => {
-    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const { root: configHome } = await makeConfigHome({ permission: { read: "allow" } });
     const providers = { bifrost: { options: { apiKey: "{env:DEFINITELY_UNSET_VAR_XYZ}" }, models: { "x/y": {} } } };
     const prepared = await prepareOpenCodeRuntimeConfig({
       env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify(providers) },
@@ -157,7 +170,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
   });
 
   it("pins small_model from PAPERCLIP_OPENCODE_SMALL_MODEL", async () => {
-    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const { root: configHome } = await makeConfigHome({ permission: { read: "allow" } });
     const prepared = await prepareOpenCodeRuntimeConfig({
       env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_SMALL_MODEL: "example/model-a" },
       config: {},
@@ -171,7 +184,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
   });
 
   it("ignores malformed PAPERCLIP_OPENCODE_PROVIDERS without writing a provider block and surfaces a note", async () => {
-    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const { root: configHome } = await makeConfigHome({ permission: { read: "allow" } });
     const prepared = await prepareOpenCodeRuntimeConfig({
       env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_PROVIDERS: "not json" },
       config: {},
@@ -188,7 +201,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
   });
 
   it("surfaces a note when PAPERCLIP_OPENCODE_PROVIDERS is valid JSON but not an object", async () => {
-    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const { root: configHome } = await makeConfigHome({ permission: { read: "allow" } });
     const prepared = await prepareOpenCodeRuntimeConfig({
       env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_PROVIDERS: "[1,2,3]" },
       config: {},
@@ -205,7 +218,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
   });
 
   it("surfaces skipped provider entries with non-object values and keeps the usable ones", async () => {
-    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const { root: configHome } = await makeConfigHome({ permission: { read: "allow" } });
     const prepared = await prepareOpenCodeRuntimeConfig({
       env: {
         XDG_CONFIG_HOME: configHome,
@@ -229,7 +242,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
   });
 
   it("surfaces skipped provider entries when no usable entries remain", async () => {
-    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const { root: configHome } = await makeConfigHome({ permission: { read: "allow" } });
     const prepared = await prepareOpenCodeRuntimeConfig({
       env: {
         XDG_CONFIG_HOME: configHome,
@@ -249,7 +262,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
   });
 
   it("registers a configured model missing from the catalog on its provider", async () => {
-    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const { root: configHome } = await makeConfigHome({ permission: { read: "allow" } });
     const prepared = await prepareOpenCodeRuntimeConfig({
       env: { XDG_CONFIG_HOME: configHome },
       config: { model: "openrouter/openai/gpt-oss-120b:nitro" },
@@ -268,7 +281,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
   });
 
   it("does not clobber an explicit model definition when registering the configured model", async () => {
-    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const { root: configHome } = await makeConfigHome({ permission: { read: "allow" } });
     const providers = {
       openrouter: {
         models: {
@@ -296,7 +309,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
   });
 
   it("skips model registration when the configured model is not provider/model shaped", async () => {
-    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const { root: configHome } = await makeConfigHome({ permission: { read: "allow" } });
     const prepared = await prepareOpenCodeRuntimeConfig({
       env: { XDG_CONFIG_HOME: configHome },
       config: { model: "not-a-provider-model" },
@@ -310,7 +323,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
   });
 
   it("respects explicit opt-out", async () => {
-    const configHome = await makeConfigHome();
+    const { root: configHome } = await makeConfigHome();
     const prepared = await prepareOpenCodeRuntimeConfig({
       env: { XDG_CONFIG_HOME: configHome },
       config: { dangerouslySkipPermissions: false },
@@ -319,5 +332,195 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(prepared.env).toEqual({ XDG_CONFIG_HOME: configHome });
     expect(prepared.notes).toEqual([]);
     await prepared.cleanup();
+  });
+
+  it("pins relative plugin entries to fixed source-anchored paths in the runtime copy", async () => {
+    const { root: configHome, configDir } = await makeConfigHome();
+    const pluginFile = await makePluginFile(configDir);
+    await fs.writeFile(
+      path.join(configDir, "opencode.json"),
+      `${JSON.stringify({ plugin: ["./plugin/guard/plugin.js"], theme: "system" }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = await readRuntimeConfig(prepared.env.XDG_CONFIG_HOME);
+    expect(runtimeConfig.plugin).toEqual([`file://${pluginFile}`]);
+    expect(
+      prepared.notes.some((note) => note.startsWith("Pinned 1 OpenCode plugin(s)")),
+    ).toBe(true);
+
+    // The plugin code must not be present in the runtime-owned copy.
+    await expect(
+      fs.access(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "plugin")),
+    ).rejects.toThrow();
+
+    await prepared.cleanup();
+  });
+
+  it("does not copy node_modules into the runtime config dir and keeps installed npm plugin specs", async () => {
+    const { root: configHome, configDir } = await makeConfigHome();
+    await makePluginFile(configDir, ["node_modules", "opencode-guard-plugin", "index.js"]);
+    await fs.writeFile(
+      path.join(configDir, "package.json"),
+      `${JSON.stringify({ dependencies: { "opencode-guard-plugin": "1.0.0" } })}\n`,
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(configDir, "opencode.json"),
+      `${JSON.stringify({ plugin: ["opencode-guard-plugin"] })}\n`,
+      "utf8",
+    );
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = await readRuntimeConfig(prepared.env.XDG_CONFIG_HOME);
+    expect(runtimeConfig.plugin).toEqual(["opencode-guard-plugin"]);
+    await expect(
+      fs.access(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "node_modules")),
+    ).rejects.toThrow();
+
+    await prepared.cleanup();
+  });
+
+  it("keeps absolute file:// plugin entries pinned to the source path", async () => {
+    const { root: configHome, configDir } = await makeConfigHome();
+    const external = path.join(configHome, "elsewhere", "guard.js");
+    await fs.mkdir(path.dirname(external), { recursive: true });
+    await fs.writeFile(external, "export default {};\n", "utf8");
+    await fs.writeFile(
+      path.join(configDir, "opencode.json"),
+      `${JSON.stringify({ plugin: [[`file://${external}`, { mode: "enforce" }]] })}\n`,
+      "utf8",
+    );
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = await readRuntimeConfig(prepared.env.XDG_CONFIG_HOME);
+    expect(runtimeConfig.plugin).toEqual([[`file://${external}`, { mode: "enforce" }]]);
+    await prepared.cleanup();
+  });
+
+  it("keeps the pinned plugin array when the run edits its own per-run config before load", async () => {
+    const { root: configHome, configDir } = await makeConfigHome();
+    const pluginFile = await makePluginFile(configDir);
+    await fs.writeFile(
+      path.join(configDir, "opencode.json"),
+      `${JSON.stringify({ plugin: ["./plugin/guard/plugin.js"] })}\n`,
+      "utf8",
+    );
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    // Simulate an agent with a shell dropping the guard from its own copy, then
+    // re-running preparation the way the adapter does per heartbeat.
+    const runtimeConfigPath = path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json");
+    const tampered = (await readRuntimeConfig(prepared.env.XDG_CONFIG_HOME)) as Record<string, unknown>;
+    delete tampered.plugin;
+    await fs.writeFile(runtimeConfigPath, `${JSON.stringify(tampered, null, 2)}\n`, "utf8");
+
+    const reprepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+    });
+    cleanupPaths.add(reprepared.env.XDG_CONFIG_HOME);
+    const repinned = await readRuntimeConfig(reprepared.env.XDG_CONFIG_HOME);
+    expect(repinned.plugin).toEqual([`file://${pluginFile}`]);
+
+    await prepared.cleanup();
+    await reprepared.cleanup();
+  });
+
+  it("writes an empty pinned plugin array when the source config has no plugin key", async () => {
+    const { root: configHome } = await makeConfigHome({ theme: "system" });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = await readRuntimeConfig(prepared.env.XDG_CONFIG_HOME);
+    expect(runtimeConfig.plugin).toEqual([]);
+    await prepared.cleanup();
+  });
+
+  it("fails closed when a relative plugin spec escapes the source config dir", async () => {
+    const { root: configHome, configDir } = await makeConfigHome();
+    await fs.writeFile(
+      path.join(configDir, "opencode.json"),
+      `${JSON.stringify({ plugin: ["../../evil/plugin.js"] })}\n`,
+      "utf8",
+    );
+    await expect(
+      prepareOpenCodeRuntimeConfig({ env: { XDG_CONFIG_HOME: configHome }, config: {} }),
+    ).rejects.toThrow(/cannot pin OpenCode plugin array/);
+  });
+
+  it("fails closed when a pinned plugin path is a symlink", async () => {
+    const { root: configHome, configDir } = await makeConfigHome();
+    const target = await makePluginFile(configDir, ["real", "guard.js"]);
+    const linkPath = path.join(configDir, "plugin", "guard.js");
+    await fs.mkdir(path.dirname(linkPath), { recursive: true });
+    await fs.symlink(target, linkPath);
+    await fs.writeFile(
+      path.join(configDir, "opencode.json"),
+      `${JSON.stringify({ plugin: ["./plugin/guard.js"] })}\n`,
+      "utf8",
+    );
+    await expect(
+      prepareOpenCodeRuntimeConfig({ env: { XDG_CONFIG_HOME: configHome }, config: {} }),
+    ).rejects.toThrow(/symlinked plugin path/);
+  });
+
+  it("fails closed when a pinned plugin path does not exist", async () => {
+    const { root: configHome, configDir } = await makeConfigHome();
+    await fs.writeFile(
+      path.join(configDir, "opencode.json"),
+      `${JSON.stringify({ plugin: ["./plugin/missing.js"] })}\n`,
+      "utf8",
+    );
+    await expect(
+      prepareOpenCodeRuntimeConfig({ env: { XDG_CONFIG_HOME: configHome }, config: {} }),
+    ).rejects.toThrow(/missing plugin path/);
+  });
+
+  it("fails closed when the source config plugin key is not an array", async () => {
+    const { root: configHome, configDir } = await makeConfigHome();
+    await fs.writeFile(
+      path.join(configDir, "opencode.json"),
+      `${JSON.stringify({ plugin: "./plugin/guard/plugin.js" })}\n`,
+      "utf8",
+    );
+    await expect(
+      prepareOpenCodeRuntimeConfig({ env: { XDG_CONFIG_HOME: configHome }, config: {} }),
+    ).rejects.toThrow(/not an array/);
+  });
+
+  it("fails closed when an npm plugin spec is not installed in the source config dir", async () => {
+    const { root: configHome, configDir } = await makeConfigHome();
+    await fs.writeFile(
+      path.join(configDir, "opencode.json"),
+      `${JSON.stringify({ plugin: ["opencode-not-installed-plugin"] })}\n`,
+      "utf8",
+    );
+    await expect(
+      prepareOpenCodeRuntimeConfig({ env: { XDG_CONFIG_HOME: configHome }, config: {} }),
+    ).rejects.toThrow(/not installed/);
   });
 });

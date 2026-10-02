@@ -21,6 +21,134 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+type PluginPinResolution =
+  | { kind: "pinned"; plugin: unknown[] }
+  | { kind: "unresolvable"; reason: string };
+
+const FILE_URL_PREFIX = "file://";
+const NPM_PLUGIN_SPEC_RE = /^(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i;
+
+async function pathExists(filepath: string): Promise<boolean> {
+  try {
+    await fs.lstat(filepath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function pathIsSymlink(filepath: string): Promise<boolean> {
+  try {
+    return (await fs.lstat(filepath)).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+// Reject the path if it or any of its parents (up to and including the source
+// config dir) is a symlink. Checking only the leaf would miss a symlinked
+// intermediate directory that redirects the pin elsewhere.
+async function pathHasSymlinkSegment(filepath: string, stopAt: string): Promise<boolean> {
+  let current = filepath;
+  const stop = path.resolve(stopAt);
+  while (true) {
+    if (await pathIsSymlink(current)) return true;
+    if (current === stop) return false;
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
+
+function pathIsInside(root: string, target: string): boolean {
+  const relative = path.relative(root, target);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+// Resolve a single OpenCode plugin spec to a fixed, source-anchored absolute
+// reference, or fail. Resolution happens against the SOURCE config dir (owned
+// by the config owner) before any runtime-writable copy exists, so the pinned
+// result never depends on files the run can edit. Symlink path segments are
+// rejected: the anchor must be the real filesystem location of the plugin, so
+// retargeting a symlink inside the copied tree cannot substitute code.
+async function pinPluginEntry(
+  entry: unknown,
+  sourceConfigDir: string,
+): Promise<{ ok: true; value: unknown } | { ok: false; reason: string }> {
+  if (Array.isArray(entry)) {
+    const [spec, ...rest] = entry as unknown[];
+    const pinned = await pinPluginEntry(spec, sourceConfigDir);
+    if (!pinned.ok) return pinned;
+    return { ok: true, value: [pinned.value, ...rest] };
+  }
+  if (typeof entry !== "string" || entry.trim().length === 0) {
+    return { ok: false, reason: "non-string plugin entry" };
+  }
+  const spec = entry.trim();
+  if (spec.startsWith(FILE_URL_PREFIX)) {
+    const filepath = spec.slice(FILE_URL_PREFIX.length);
+    if (!path.isAbsolute(filepath)) {
+      return { ok: false, reason: `non-absolute ${FILE_URL_PREFIX} spec ${spec}` };
+    }
+    if (await pathHasSymlinkSegment(filepath, path.parse(filepath).root)) {
+      return { ok: false, reason: `symlinked plugin path ${filepath}` };
+    }
+    if (!(await pathExists(filepath))) {
+      return { ok: false, reason: `missing plugin path ${filepath}` };
+    }
+    return { ok: true, value: spec };
+  }
+  if (!path.isAbsolute(spec) && spec.startsWith(".")) {
+    const resolved = path.resolve(sourceConfigDir, spec);
+    if (!pathIsInside(sourceConfigDir, resolved)) {
+      return { ok: false, reason: `plugin spec ${spec} escapes the source config dir` };
+    }
+    if (await pathHasSymlinkSegment(resolved, path.parse(resolved).root)) {
+      return { ok: false, reason: `symlinked plugin path ${resolved}` };
+    }
+    if (!(await pathExists(resolved))) {
+      return { ok: false, reason: `missing plugin path ${resolved}` };
+    }
+    return { ok: true, value: `${FILE_URL_PREFIX}${resolved}` };
+  }
+  if (NPM_PLUGIN_SPEC_RE.test(spec)) {
+    const packageDir = path.join(sourceConfigDir, "node_modules", spec);
+    if (await pathHasSymlinkSegment(packageDir, sourceConfigDir)) {
+      return { ok: false, reason: `symlinked plugin package ${spec}` };
+    }
+    if (!(await pathExists(packageDir))) {
+      return { ok: false, reason: `plugin package ${spec} is not installed under the source config dir` };
+    }
+    return { ok: true, value: spec };
+  }
+  return { ok: false, reason: `unrecognized plugin spec ${spec}` };
+}
+
+// Pin the source config's `plugin` array to fixed, config-owner-anchored
+// references that are injected into the runtime copy AFTER the copy lands.
+// Without this the runtime-writable per-run config carries a `plugin` array
+// the agent can edit to drop enforcement plugins before load.
+async function resolvePinnedPluginArray(
+  sourceConfig: Record<string, unknown>,
+  sourceConfigDir: string,
+): Promise<PluginPinResolution> {
+  if (!("plugin" in sourceConfig)) {
+    return { kind: "pinned", plugin: [] };
+  }
+  if (!Array.isArray(sourceConfig.plugin)) {
+    return { kind: "unresolvable", reason: "source config `plugin` key is not an array" };
+  }
+  const pinned: unknown[] = [];
+  for (const entry of sourceConfig.plugin) {
+    const result = await pinPluginEntry(entry, sourceConfigDir);
+    if (!result.ok) {
+      return { kind: "unresolvable", reason: result.reason };
+    }
+    pinned.push(result.value);
+  }
+  return { kind: "pinned", plugin: pinned };
+}
+
 // Recursively replace {env:VAR} placeholders with the resolved value. Used to bake
 // gateway provider secrets (e.g. the LLM-gateway virtual key) into opencode.json
 // SERVER-SIDE, where the value is reliably present. OpenCode's own {env:...}
@@ -130,9 +258,24 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   }
 
   const sourceConfigDir = path.join(resolveXdgConfigHome(input.env), "opencode");
+  const sourceConfig = await readJsonObject(path.join(sourceConfigDir, "opencode.json"));
+
+  // Resolve the enforcement `plugin` array against the SOURCE config dir before
+  // any runtime-writable copy exists. If any entry cannot be pinned to a fixed,
+  // source-anchored path, fail closed: launching with a runtime-editable plugin
+  // array (or none at all) would silently drop enforcement plugins.
+  const pluginPin = await resolvePinnedPluginArray(sourceConfig, sourceConfigDir);
+  if (pluginPin.kind === "unresolvable") {
+    throw new Error(
+      `prepareOpenCodeRuntimeConfig: cannot pin OpenCode plugin array from ${sourceConfigDir}: ${pluginPin.reason}. ` +
+        "Refusing to launch with a runtime-editable plugin configuration.",
+    );
+  }
+
   const runtimeConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-config-"));
   const runtimeConfigDir = path.join(runtimeConfigHome, "opencode");
   const runtimeConfigPath = path.join(runtimeConfigDir, "opencode.json");
+  const sourceConfigDirResolved = path.resolve(sourceConfigDir);
 
   await fs.mkdir(runtimeConfigDir, { recursive: true });
   try {
@@ -141,6 +284,15 @@ export async function prepareOpenCodeRuntimeConfig(input: {
       force: true,
       errorOnExist: false,
       dereference: false,
+      // Plugin code must not flow through the runtime-owned copy: the run could
+      // edit the copied files (or retarget copied symlinks) to change or drop
+      // enforcement. Plugin specs resolve against the source dir instead.
+      filter: (source) => {
+        const rel = path.relative(sourceConfigDirResolved, path.resolve(source));
+        if (rel === "" || rel.startsWith("..")) return true;
+        const firstSegment = rel.split(path.sep)[0];
+        return firstSegment !== "plugin" && firstSegment !== "node_modules";
+      },
     });
   } catch (err) {
     if ((err as NodeJS.ErrnoException | null)?.code !== "ENOENT") {
@@ -221,6 +373,16 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     nextConfig.small_model = smallModel;
     notes.push(`Pinned OpenCode small_model to ${smallModel}.`);
   }
+
+  // Last write wins: pin the plugin array to the source-resolved references so
+  // anything the copy produced (or a run wrote between the copy and now) is
+  // replaced. Enforcement plugins load from the config-owner-anchored source
+  // paths, not from this runtime-writable directory.
+  nextConfig.plugin = pluginPin.plugin;
+  notes.push(
+    `Pinned ${pluginPin.plugin.length} OpenCode plugin(s) to source config dir paths outside the runtime-owned copy.`,
+  );
+
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
 
   return {
